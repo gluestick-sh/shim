@@ -1,0 +1,67 @@
+# After GitHub Release is published, upload assets to:
+#   https://gluestick.sh/releases/shim/
+#
+# Secrets (host / port / user / key / path [/ passphrase]):
+#   GLUESTICK_SSH_HOST, GLUESTICK_SSH_PORT, GLUESTICK_SSH_USER,
+#   GLUESTICK_SSH_KEY, GLUESTICK_SSH_PATH, optional GLUESTICK_SSH_PASSPHRASE
+
+
+name: Publish to gluestick.sh
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sync (e.g. v1.2.3)'
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" -R "${{ github.repository }}" -D dist \
+            -p 'shim-windows-amd64.exe' \
+            -p 'shim-windows-arm64.exe' \
+            -p 'shim-windows-amd64.exe.sha256' \
+            -p 'shim-windows-arm64.exe.sha256'
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-release
+          path: |
+            dist/shim-windows-amd64.exe
+            dist/shim-windows-arm64.exe
+            dist/shim-windows-amd64.exe.sha256
+            dist/shim-windows-arm64.exe.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: prepare
+    uses: gluestick-sh/web/.github/workflows/publish-release-assets.yml@main
+    with:
+      product: shim
+      artifact-name: shim-release
+      files: |
+        shim-windows-amd64.exe
+        shim-windows-arm64.exe
+        shim-windows-amd64.exe.sha256
+        shim-windows-arm64.exe.sha256
+    secrets:
+      GLUESTICK_SSH_HOST: ${{ secrets.GLUESTICK_SSH_HOST }}
+      GLUESTICK_SSH_PORT: ${{ secrets.GLUESTICK_SSH_PORT }}
+      GLUESTICK_SSH_USER: ${{ secrets.GLUESTICK_SSH_USER }}
+      GLUESTICK_SSH_KEY: ${{ secrets.GLUESTICK_SSH_KEY }}
+      GLUESTICK_SSH_PATH: ${{ secrets.GLUESTICK_SSH_PATH }}
+      GLUESTICK_SSH_PASSPHRASE: ${{ secrets.GLUESTICK_SSH_PASSPHRASE }}
+      GLUESTICK_SSH_KNOWN_HOSTS: ${{ secrets.GLUESTICK_SSH_KNOWN_HOSTS }}
