@@ -1,15 +1,29 @@
+# Tag push: test → build → GitHub Release → https://gluestick.sh/releases/shim/
+# Manual: workflow_dispatch with an existing tag to re-sync that release to the site.
+#
+# Secrets (org recommended): GLUESTICK_SSH_HOST, GLUESTICK_SSH_PORT,
+#   GLUESTICK_SSH_USER, GLUESTICK_SSH_KEY, GLUESTICK_SSH_PATH,
+#   optional GLUESTICK_SSH_PASSPHRASE / GLUESTICK_SSH_KNOWN_HOSTS
+
 name: Release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to sync to gluestick.sh (e.g. v1.2.3)'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   test:
+    if: github.event_name == 'push'
     name: test + smoke (windows)
     runs-on: windows-latest
     steps:
@@ -27,6 +41,7 @@ jobs:
           if (-not (Test-Path shim.exe)) { throw "shim.exe not found" }
 
   build:
+    if: github.event_name == 'push'
     name: build shim-${{ matrix.goarch }}.exe
     runs-on: ubuntu-latest
     needs: test
@@ -59,7 +74,8 @@ jobs:
             shim-windows-${{ matrix.goarch }}.exe.sha256
 
   release:
-    name: publish release
+    if: github.event_name == 'push'
+    name: publish GitHub Release
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -74,3 +90,68 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shim-release
+          path: |
+            dist/shim-windows-amd64.exe
+            dist/shim-windows-arm64.exe
+            dist/shim-windows-amd64.exe.sha256
+            dist/shim-windows-arm64.exe.sha256
+          if-no-files-found: error
+
+  sync-web:
+    if: github.event_name == 'workflow_dispatch'
+    name: sync from existing release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" -R "${{ github.repository }}" -D dist \
+            -p 'shim-windows-amd64.exe' \
+            -p 'shim-windows-arm64.exe' \
+            -p 'shim-windows-amd64.exe.sha256' \
+            -p 'shim-windows-arm64.exe.sha256'
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shim-release
+          path: |
+            dist/shim-windows-amd64.exe
+            dist/shim-windows-arm64.exe
+            dist/shim-windows-amd64.exe.sha256
+            dist/shim-windows-arm64.exe.sha256
+          if-no-files-found: error
+
+  publish-web:
+    name: publish to gluestick.sh
+    needs: [release, sync-web]
+    if: |
+      always() && !cancelled() && (
+        needs.release.result == 'success' ||
+        needs.sync-web.result == 'success'
+      )
+    uses: gluestick-sh/web/.github/workflows/publish-release-assets.yml@main
+    with:
+      product: shim
+      artifact-name: shim-release
+      files: |
+        shim-windows-amd64.exe
+        shim-windows-arm64.exe
+        shim-windows-amd64.exe.sha256
+        shim-windows-arm64.exe.sha256
+    secrets:
+      GLUESTICK_SSH_HOST: ${{ secrets.GLUESTICK_SSH_HOST }}
+      GLUESTICK_SSH_PORT: ${{ secrets.GLUESTICK_SSH_PORT }}
+      GLUESTICK_SSH_USER: ${{ secrets.GLUESTICK_SSH_USER }}
+      GLUESTICK_SSH_KEY: ${{ secrets.GLUESTICK_SSH_KEY }}
+      GLUESTICK_SSH_PATH: ${{ secrets.GLUESTICK_SSH_PATH }}
+      GLUESTICK_SSH_PASSPHRASE: ${{ secrets.GLUESTICK_SSH_PASSPHRASE }}
+      GLUESTICK_SSH_KNOWN_HOSTS: ${{ secrets.GLUESTICK_SSH_KNOWN_HOSTS }}
