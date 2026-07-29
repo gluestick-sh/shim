@@ -234,7 +234,8 @@ jobs:
           ssh-add -L
           echo "::endgroup::"
 
-          ssh_base=(ssh -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o PreferredAuthentications=publickey)
+          # IdentitiesOnly=yes ignores agent keys unless -i is set; must pass deploy_key.
+          ssh_base=(ssh -p "$port" -i "$HOME/.ssh/deploy_key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o PreferredAuthentications=publickey)
 
           echo "::group::SSH connection probe (verbose)"
           set +e
@@ -257,5 +258,5 @@ jobs:
           echo "rsync -> …/shim/"
           echo "public URL: https://gluestick.sh/releases/shim/"
           rsync -avz --chmod=Fu=rw,Fgo=r,Du=rwx,Dgo=rx \
-            -e "ssh -p ${port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes" \
+            -e "ssh -p ${port} -i ${HOME}/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes" \
             stage/ "${SSH_USER}@${SSH_HOST}:${remote_dir}/"
