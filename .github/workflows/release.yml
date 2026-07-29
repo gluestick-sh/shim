@@ -161,6 +161,20 @@ jobs:
           root="${SSH_PATH%/}"
           remote_dir="${root}/shim"
 
+          # Safe diagnostics (never print key / passphrase contents).
+          echo "::group::SSH config diagnostics"
+          echo "SSH_HOST set: $([ -n "${SSH_HOST:-}" ] && echo yes || echo NO)"
+          echo "SSH_PORT: ${port:-<empty>}"
+          echo "SSH_USER set: $([ -n "${SSH_USER:-}" ] && echo yes || echo NO)"
+          echo "SSH_PATH set: $([ -n "${SSH_PATH:-}" ] && echo yes || echo NO)"
+          echo "remote_dir ends with: /shim"
+          echo "SSH_KEY set: $([ -n "${SSH_KEY:-}" ] && echo yes || echo NO)"
+          echo "SSH_KEY lines: $(printf '%s\n' "${SSH_KEY:-}" | wc -l)"
+          echo "SSH_KEY begins with: $(printf '%s\n' "${SSH_KEY:-}" | head -n1 | tr -d '\r')"
+          echo "SSH_PASSPHRASE set: $([ -n "${SSH_PASSPHRASE:-}" ] && echo yes || echo NO)"
+          echo "SSH_KNOWN_HOSTS set: $([ -n "${SSH_KNOWN_HOSTS:-}" ] && echo yes || echo NO)"
+          echo "::endgroup::"
+
           mkdir -p stage
           for name in \
             shim-windows-amd64.exe \
@@ -183,10 +197,23 @@ jobs:
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
+          if ! head -n1 ~/.ssh/deploy_key | grep -q 'BEGIN .*PRIVATE KEY'; then
+            echo "::error::GLUESTICK_SSH_KEY does not look like a PEM private key (first line should be BEGIN … PRIVATE KEY)"
+            head -n1 ~/.ssh/deploy_key
+            exit 1
+          fi
+
           if [ -n "${SSH_KNOWN_HOSTS:-}" ]; then
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+            echo "using GLUESTICK_SSH_KNOWN_HOSTS"
           else
-            ssh-keyscan -p "$port" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+            echo "GLUESTICK_SSH_KNOWN_HOSTS empty; running ssh-keyscan"
+            if ! ssh-keyscan -p "$port" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>~/ssh-keyscan.err; then
+              echo "::error::ssh-keyscan failed"
+              cat ~/ssh-keyscan.err || true
+              exit 1
+            fi
+            cat ~/ssh-keyscan.err || true
           fi
           chmod 644 ~/.ssh/known_hosts
 
@@ -201,13 +228,34 @@ jobs:
             ssh-add ~/.ssh/deploy_key
           fi
 
-          ssh_base=(ssh -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          echo "::group::Loaded deploy key"
+          ssh-add -l
+          echo "public key (must appear in server ~/.ssh/authorized_keys for SSH_USER):"
+          ssh-add -L
+          echo "::endgroup::"
 
-          echo "mkdir ${remote_dir}"
+          ssh_base=(ssh -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o PreferredAuthentications=publickey)
+
+          echo "::group::SSH connection probe (verbose)"
+          set +e
+          "${ssh_base[@]}" -vvv "${SSH_USER}@${SSH_HOST}" "echo ok" 2>~/ssh-probe.err
+          probe_rc=$?
+          set -e
+          grep -E 'Authentications|Offering|Server accepts|Authentication succeeded|Permission denied|Connection|identity file|Ready to authenticate|publickey' ~/ssh-probe.err || true
+          echo "---- full verbose log ----"
+          cat ~/ssh-probe.err
+          echo "::endgroup::"
+
+          if [ "$probe_rc" -ne 0 ]; then
+            echo "::error::SSH auth failed (exit ${probe_rc}). Server rejected the deploy key for this user/host, or wrong key/user/host/port. Compare the printed public key with authorized_keys on the server."
+            exit "$probe_rc"
+          fi
+
+          echo "mkdir …/shim"
           "${ssh_base[@]}" "${SSH_USER}@${SSH_HOST}" "mkdir -p $(printf %q "$remote_dir")"
 
-          echo "rsync -> ${SSH_USER}@${SSH_HOST}:${remote_dir}/"
+          echo "rsync -> …/shim/"
           echo "public URL: https://gluestick.sh/releases/shim/"
           rsync -avz --chmod=Fu=rw,Fgo=r,Du=rwx,Dgo=rx \
-            -e "ssh -p ${port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            -e "ssh -p ${port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes" \
             stage/ "${SSH_USER}@${SSH_HOST}:${remote_dir}/"
