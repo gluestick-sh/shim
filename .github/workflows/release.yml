@@ -4,6 +4,7 @@
 # Secrets (org recommended): GLUESTICK_SSH_HOST, GLUESTICK_SSH_PORT,
 #   GLUESTICK_SSH_USER, GLUESTICK_SSH_KEY, GLUESTICK_SSH_PATH,
 #   optional GLUESTICK_SSH_PASSPHRASE / GLUESTICK_SSH_KNOWN_HOSTS
+# Upload target: $GLUESTICK_SSH_PATH/shim/ → https://gluestick.sh/releases/shim/
 
 name: Release
 
@@ -132,26 +133,81 @@ jobs:
 
   publish-web:
     name: publish to gluestick.sh
+    runs-on: ubuntu-latest
     needs: [release, sync-web]
     if: |
       always() && !cancelled() && (
         needs.release.result == 'success' ||
         needs.sync-web.result == 'success'
       )
-    uses: gluestick-sh/web/.github/workflows/publish-release-assets.yml@main
-    with:
-      product: shim
-      artifact-name: shim-release
-      files: |
-        shim-windows-amd64.exe
-        shim-windows-arm64.exe
-        shim-windows-amd64.exe.sha256
-        shim-windows-arm64.exe.sha256
-    secrets:
-      GLUESTICK_SSH_HOST: ${{ secrets.GLUESTICK_SSH_HOST }}
-      GLUESTICK_SSH_PORT: ${{ secrets.GLUESTICK_SSH_PORT }}
-      GLUESTICK_SSH_USER: ${{ secrets.GLUESTICK_SSH_USER }}
-      GLUESTICK_SSH_KEY: ${{ secrets.GLUESTICK_SSH_KEY }}
-      GLUESTICK_SSH_PATH: ${{ secrets.GLUESTICK_SSH_PATH }}
-      GLUESTICK_SSH_PASSPHRASE: ${{ secrets.GLUESTICK_SSH_PASSPHRASE }}
-      GLUESTICK_SSH_KNOWN_HOSTS: ${{ secrets.GLUESTICK_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: shim-release
+          path: dist
+
+      - name: Upload to gluestick.sh/releases/shim/
+        env:
+          SSH_HOST: ${{ secrets.GLUESTICK_SSH_HOST }}
+          SSH_PORT: ${{ secrets.GLUESTICK_SSH_PORT }}
+          SSH_USER: ${{ secrets.GLUESTICK_SSH_USER }}
+          SSH_KEY: ${{ secrets.GLUESTICK_SSH_KEY }}
+          SSH_PATH: ${{ secrets.GLUESTICK_SSH_PATH }}
+          SSH_PASSPHRASE: ${{ secrets.GLUESTICK_SSH_PASSPHRASE }}
+          SSH_KNOWN_HOSTS: ${{ secrets.GLUESTICK_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          port="${SSH_PORT}"
+          root="${SSH_PATH%/}"
+          remote_dir="${root}/shim"
+
+          mkdir -p stage
+          for name in \
+            shim-windows-amd64.exe \
+            shim-windows-arm64.exe \
+            shim-windows-amd64.exe.sha256 \
+            shim-windows-arm64.exe.sha256
+          do
+            src="dist/${name}"
+            if [ ! -f "$src" ]; then
+              echo "missing file: $src"
+              find dist -type f | head -n 50
+              exit 1
+            fi
+            cp -f "$src" "stage/${name}"
+            echo "staged ${name}"
+          done
+          ls -la stage
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          if [ -n "${SSH_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$port" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+          eval "$(ssh-agent -s)"
+          if [ -n "${SSH_PASSPHRASE:-}" ]; then
+            export SSH_PASSPHRASE
+            printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$SSH_PASSPHRASE"' > ~/.ssh/askpass.sh
+            chmod 700 ~/.ssh/askpass.sh
+            DISPLAY=:0 SSH_ASKPASS="$HOME/.ssh/askpass.sh" SSH_ASKPASS_REQUIRE=force \
+              ssh-add ~/.ssh/deploy_key </dev/null
+          else
+            ssh-add ~/.ssh/deploy_key
+          fi
+
+          ssh_base=(ssh -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+
+          echo "mkdir ${remote_dir}"
+          "${ssh_base[@]}" "${SSH_USER}@${SSH_HOST}" "mkdir -p $(printf %q "$remote_dir")"
+
+          echo "rsync -> ${SSH_USER}@${SSH_HOST}:${remote_dir}/"
+          echo "public URL: https://gluestick.sh/releases/shim/"
+          rsync -avz --chmod=Fu=rw,Fgo=r,Du=rwx,Dgo=rx \
+            -e "ssh -p ${port} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            stage/ "${SSH_USER}@${SSH_HOST}:${remote_dir}/"
