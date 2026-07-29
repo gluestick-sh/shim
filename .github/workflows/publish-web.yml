@@ -36,7 +36,7 @@ jobs:
             -p 'shim-windows-arm64.exe.sha256'
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shim-release
           path: |
@@ -45,6 +45,7 @@ jobs:
             dist/shim-windows-amd64.exe.sha256
             dist/shim-windows-arm64.exe.sha256
           if-no-files-found: error
+
 
   publish:
     needs: prepare
