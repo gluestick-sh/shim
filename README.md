@@ -39,4 +39,4 @@ sync across both projects:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
